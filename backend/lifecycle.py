@@ -37,6 +37,7 @@ RELEASE_API = "https://api.github.com/repos/chen08209/FlClash/releases/latest"
 TAG = re.compile(r"v\d+\.\d+\.\d+")
 SAFE_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C", "HOME": "/root"}
 TUN_TRIAL_SECONDS = 90
+ASSET_DOWNLOAD_SECONDS = 20 * 60
 
 
 class LifecycleError(RuntimeError):
@@ -297,14 +298,15 @@ class Lifecycle:
             self._download(partial, urls[0], digest, size)
             return
 
-        # Keep only the official partial on total failure. Separate mirror
-        # files prevent one source from overwriting another source's bytes.
+        # Each source writes independently. All candidates represent the same
+        # pinned asset, so a retry can seed them from the longest partial.
         directory = partial.parent / "asset-race"
         if directory.exists():
             self._discard(directory)
         directory.mkdir(mode=0o700)
         results = queue.Queue()
         cancelled = threading.Event()
+        paths = [partial, *(directory / str(index) for index in range(1, len(urls)))]
         workers = []
         winner = None
 
@@ -320,8 +322,10 @@ class Lifecycle:
                 results.put(verified)
 
         try:
-            for index, url in enumerate(urls):
-                path = partial if index == 0 else directory / str(index)
+            if partial.is_file() and partial.stat().st_size < size:
+                for path in paths[1:]:
+                    shutil.copyfile(partial, path)
+            for path, url in zip(paths, urls):
                 worker = threading.Thread(target=attempt, args=(path, url), daemon=True)
                 worker.start()
                 workers.append(worker)
@@ -334,8 +338,10 @@ class Lifecycle:
             for worker in workers:
                 worker.join()
             try:
-                if winner is not None and winner != partial:
-                    winner.replace(partial)
+                retained = winner or max((path for path in paths if path.is_file()),
+                                         key=lambda path: path.stat().st_size, default=None)
+                if retained is not None and retained != partial:
+                    retained.replace(partial)
             finally:
                 self._discard(directory)
         if winner is None:
@@ -344,7 +350,7 @@ class Lifecycle:
     @staticmethod
     def _download(path, url, digest, size, cancelled=None):
         checksum = hashlib.sha256()
-        deadline = time.monotonic() + 180
+        deadline = time.monotonic() + ASSET_DOWNLOAD_SECONDS
         try:
             count = path.stat().st_size if path.exists() else 0
             if count > size:
@@ -473,7 +479,6 @@ Requires={HELPER}
 [Service]
 Type=exec
 User=deck
-WorkingDirectory={unit_argument(self.current)}
 BindPaths={binding}
 ExecCondition=/usr/bin/python3 -I {launch} --check
 ExecStart=/usr/bin/python3 -I {launch}

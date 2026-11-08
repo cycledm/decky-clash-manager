@@ -58,19 +58,29 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(partial.read_bytes(), b"verified")
             self.assertEqual(list(partial.parent.iterdir()), [partial])
 
-    def test_all_sources_fail_and_only_official_partial_survives(self):
+    def test_failed_race_keeps_longest_partial_for_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             partial = Path(directory) / "asset.partial"
             lifecycle = Lifecycle(root=Path(directory))
 
             def download(path, url, digest, size, stop):
-                path.write_bytes(url.encode())
+                path.write_bytes(b"abc" if url == "official" else b"abcdef")
                 raise LifecycleError("Download interrupted.")
 
             with patch.object(lifecycle, "_download", side_effect=download):
                 with self.assertRaisesRegex(LifecycleError, "any source"):
                     lifecycle._download_first(partial, ["official", "mirror"], "digest", 8)
-            self.assertEqual(partial.read_bytes(), b"official")
+            self.assertEqual(partial.read_bytes(), b"abcdef")
+            seeded = []
+
+            def resume(path, url, digest, size, stop):
+                seeded.append(path.read_bytes())
+                raise LifecycleError("Download interrupted.")
+
+            with patch.object(lifecycle, "_download", side_effect=resume):
+                with self.assertRaisesRegex(LifecycleError, "any source"):
+                    lifecycle._download_first(partial, ["official", "mirror"], "digest", 8)
+            self.assertEqual(seeded, [b"abcdef", b"abcdef"])
             self.assertEqual(list(partial.parent.iterdir()), [partial])
 
     def test_rollback_restores_exact_program_data_and_running_intent(self):
