@@ -13,6 +13,7 @@ import pwd
 import queue
 import re
 import shutil
+import ssl
 import stat
 import subprocess
 import tempfile
@@ -37,11 +38,15 @@ RELEASE_API = "https://api.github.com/repos/chen08209/FlClash/releases/latest"
 TAG = re.compile(r"v\d+\.\d+\.\d+")
 SAFE_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C", "HOME": "/root"}
 TUN_TRIAL_SECONDS = 90
-ASSET_DOWNLOAD_SECONDS = 20 * 60
+ASSET_DOWNLOAD_SECONDS = 60 * 60
 
 
 class LifecycleError(RuntimeError):
     """An operation failed. The message is safe for the plugin panel."""
+
+
+class DownloadInterrupted(LifecycleError):
+    """The download can retry from the bytes already written."""
 
 
 def mutation(method):
@@ -89,7 +94,7 @@ def open_official(url):
 
 
 def open_asset(url, offset):
-    return open_release(url, offset, AssetRedirects(), 8)
+    return open_release(url, offset, AssetRedirects(), 20)
 
 
 def safe_directory(path, mode, uid=0, gid=0):
@@ -310,27 +315,30 @@ class Lifecycle:
         workers = []
         winner = None
 
-        def attempt(path, url):
+        def attempt(index, path, url):
             verified = None
+            reason = None
             try:
                 self._download(path, url, digest, size, cancelled)
                 verified = path
+            except LifecycleError as error:
+                reason = str(error)
             except Exception:
-                # Failed sources are ignored while any other attempt remains.
-                pass
+                reason = "The download source failed unexpectedly."
             finally:
-                results.put(verified)
+                results.put((index, verified, reason))
 
+        failures = [None] * len(urls)
         try:
             if partial.is_file() and partial.stat().st_size < size:
                 for path in paths[1:]:
                     shutil.copyfile(partial, path)
-            for path, url in zip(paths, urls):
-                worker = threading.Thread(target=attempt, args=(path, url), daemon=True)
+            for index, (path, url) in enumerate(zip(paths, urls)):
+                worker = threading.Thread(target=attempt, args=(index, path, url), daemon=True)
                 worker.start()
                 workers.append(worker)
             for _ in workers:
-                winner = results.get()
+                index, winner, failures[index] = results.get()
                 if winner is not None:
                     break
         finally:
@@ -345,12 +353,30 @@ class Lifecycle:
             finally:
                 self._discard(directory)
         if winner is None:
-            raise LifecycleError("Could not download and verify FlClash from any source. Check connectivity and retry.")
+            summary = "Could not download and verify FlClash from any source. Check connectivity and retry."
+            details = [f"{urlsplit(url).hostname}: {reason}" for url, reason in zip(urls, failures) if reason]
+            raise LifecycleError("\n".join([summary, *details]))
 
     @staticmethod
     def _download(path, url, digest, size, cancelled=None):
-        checksum = hashlib.sha256()
         deadline = time.monotonic() + ASSET_DOWNLOAD_SECONDS
+        for attempt in range(3):
+            try:
+                Lifecycle._download_once(path, url, digest, size, cancelled, deadline)
+                return
+            except DownloadInterrupted:
+                if attempt == 2 or time.monotonic() >= deadline:
+                    raise
+                if cancelled is not None and cancelled.wait(1):
+                    raise LifecycleError("Download cancelled.") from None
+                if cancelled is None:
+                    time.sleep(1)
+
+    @staticmethod
+    def _download_once(path, url, digest, size, cancelled, deadline):
+        checksum = hashlib.sha256()
+        timed_out = "The FlClash download timed out. Retry to resume."
+        interrupted = "The FlClash download was interrupted. Retry to resume."
         try:
             count = path.stat().st_size if path.exists() else 0
             if count > size:
@@ -362,6 +388,8 @@ class Lifecycle:
                         checksum.update(chunk)
             if cancelled is not None and cancelled.is_set():
                 raise LifecycleError("Download cancelled.")
+            if time.monotonic() >= deadline:
+                raise LifecycleError(timed_out)
             if count < size:
                 with open_asset(url, count) as response:
                     if response.status == 200:
@@ -380,11 +408,31 @@ class Lifecycle:
                             checksum.update(chunk)
                             output.write(chunk)
                             if time.monotonic() >= deadline:
-                                raise LifecycleError("The FlClash download timed out. Retry to resume.")
+                                raise LifecycleError(timed_out)
+        except urllib.error.HTTPError as error:
+            error.close()
+            message = f"The download source returned HTTP {error.code}."
+            if error.code in {408, 500, 502, 503, 504}:
+                raise DownloadInterrupted(message) from None
+            raise LifecycleError(message) from None
+        except urllib.error.URLError as error:
+            if isinstance(error.reason, TimeoutError):
+                raise DownloadInterrupted(timed_out) from None
+            if isinstance(error.reason, ssl.SSLError):
+                raise LifecycleError("The download source failed the TLS handshake.") from None
+            if error.reason == "Unexpected release redirect":
+                raise LifecycleError("The download source redirected to an unapproved host.") from None
+            raise DownloadInterrupted("Could not connect to the download source.") from None
+        except TimeoutError:
+            raise DownloadInterrupted(timed_out) from None
+        except ssl.SSLError:
+            raise LifecycleError("The download source failed the TLS handshake.") from None
+        except (ConnectionError, http.client.IncompleteRead):
+            raise DownloadInterrupted(interrupted) from None
         except (OSError, http.client.HTTPException):
             raise LifecycleError("Could not download the official FlClash AppImage. Check GitHub connectivity and disk space, then retry.") from None
         if count != size:
-            raise LifecycleError("The FlClash download was interrupted. Retry to resume.")
+            raise DownloadInterrupted(interrupted)
         if checksum.hexdigest() != digest:
             path.unlink(missing_ok=True)
             raise LifecycleError("FlClash AppImage SHA-256 verification failed. Retry the download.")

@@ -168,7 +168,7 @@ function Panel() {
             status: t(status.effective ? "Core verified" : status.running ? "Client running" : "Stopped") }) : ""
         } />
         {(problem || status.problem) && (
-          <Info label={t("Last operation")} value={<span role="alert">{t(problem || status.problem || "")}</span>} />
+          <Info label={t("Last operation")} value={<span role="alert" style={{ whiteSpace: "pre-line" }}>{t(problem || status.problem || "")}</span>} />
         )}
         {busy && <Info label={t("Working…")} value="" />}
         <Info label={t("Selected profile")} value={selected?.name ?? t("None")} />

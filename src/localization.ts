@@ -15,12 +15,19 @@ let currentLocale = browserLocale;
 let steamLocale: Promise<Locale> | undefined;
 
 function translator(locale: Locale) {
-  return (message: string, values: Values = {}) => {
+  return function translate(message: string, values: Values = {}): string {
     if (locale === "zh-CN") {
-      const httpStatus = /^The subscription server returned HTTP (\d{3})\.$/.exec(message);
+      if (message.startsWith("Could not download and verify FlClash from any source.") && message.includes("\n")) {
+        const [summary, ...sources] = message.split("\n");
+        return [translate(summary), ...sources.map((source) => {
+          const separator = source.indexOf(": ");
+          return separator < 0 ? source : source.slice(0, separator + 2) + translate(source.slice(separator + 2));
+        })].join("\n");
+      }
+      const httpStatus = /^(The subscription server|The download source) returned HTTP (\d{3})\.$/.exec(message);
       if (httpStatus) {
-        message = "The subscription server returned HTTP {status}.";
-        values = { status: httpStatus[1] };
+        message = `${httpStatus[1]} returned HTTP {status}.`;
+        values = { status: httpStatus[2] };
       }
     }
     const template = locale === "zh-CN" ? (chinese[message] ?? message) : message;

@@ -6,12 +6,29 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from backend.lifecycle import Lifecycle, LifecycleError
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_download_reconnects_after_a_short_response(self):
+        asset = b"official AppImage"
+        offset = 8
+        initial = io.BytesIO(asset[:offset])
+        initial.status = 200
+        remaining = io.BytesIO(asset[offset:])
+        remaining.status = 206
+        remaining.headers = {"Content-Range": f"bytes {offset}-{len(asset) - 1}/{len(asset)}"}
+        url = "https://github.com/example/release/AppImage"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "asset.partial"
+            with patch("backend.lifecycle.open_asset", side_effect=[initial, remaining]) as request, \
+                 patch("backend.lifecycle.time.sleep"):
+                Lifecycle._download(path, url, hashlib.sha256(asset).hexdigest(), len(asset))
+            self.assertEqual(request.call_args_list, [call(url, 0), call(url, offset)])
+            self.assertEqual(path.read_bytes(), asset)
+
     def test_official_download_resumes_and_checks_the_complete_digest(self):
         original = b"original AppImage bytes"
         offset = 7
@@ -67,9 +84,10 @@ class LifecycleTests(unittest.TestCase):
                 path.write_bytes(b"abc" if url == "official" else b"abcdef")
                 raise LifecycleError("Download interrupted.")
 
+            sources = ["https://github.com/asset", "https://dl.clashwall.com/asset"]
             with patch.object(lifecycle, "_download", side_effect=download):
-                with self.assertRaisesRegex(LifecycleError, "any source"):
-                    lifecycle._download_first(partial, ["official", "mirror"], "digest", 8)
+                with self.assertRaisesRegex(LifecycleError, "dl.clashwall.com: Download interrupted"):
+                    lifecycle._download_first(partial, sources, "digest", 8)
             self.assertEqual(partial.read_bytes(), b"abcdef")
             seeded = []
 
@@ -79,7 +97,7 @@ class LifecycleTests(unittest.TestCase):
 
             with patch.object(lifecycle, "_download", side_effect=resume):
                 with self.assertRaisesRegex(LifecycleError, "any source"):
-                    lifecycle._download_first(partial, ["official", "mirror"], "digest", 8)
+                    lifecycle._download_first(partial, sources, "digest", 8)
             self.assertEqual(seeded, [b"abcdef", b"abcdef"])
             self.assertEqual(list(partial.parent.iterdir()), [partial])
 
