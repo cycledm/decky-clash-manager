@@ -1,0 +1,12 @@
+{
+  "flclash": {
+    "default": "v0.9.3",
+    "releases": {
+      "v0.9.3": {
+        "asset": "FlClash-0.9.3-linux-amd64.AppImage",
+        "sha256": "fe5e7c237f053910ba6c4f22c1af2ceab9736da7e2bdbdd07d0d41b2b2c884e8",
+        "size": 69739712
+      }
+    }
+  }
+}

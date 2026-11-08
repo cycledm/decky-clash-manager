@@ -1,0 +1,10 @@
+{
+  "name": "Clash Manager",
+  "author": "CycleDM",
+  "flags": ["root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["network", "proxy"],
+    "description": "Install and manage FlClash from Gaming Mode."
+  }
+}
