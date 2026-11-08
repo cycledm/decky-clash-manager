@@ -8,10 +8,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import call, patch
 
-from backend.lifecycle import Lifecycle, LifecycleError
+from backend.lifecycle import AssetRedirects, Lifecycle, LifecycleError, open_release
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_release_requests_use_the_steamos_ca_bundle_when_available(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory) / "ca-certificates.crt"
+            bundle.touch()
+            with patch("backend.lifecycle.STEAMOS_CA_BUNDLE", bundle), \
+                 patch("backend.lifecycle.ssl.create_default_context") as context, \
+                 patch("backend.lifecycle.urllib.request.build_opener") as opener:
+                open_release("https://github.com/example/release/AppImage", 0, AssetRedirects(), 20)
+            context.assert_called_once_with(cafile=str(bundle))
+            self.assertIs(opener.call_args.args[-1]._context, context.return_value)
+
     def test_download_reconnects_after_a_short_response(self):
         asset = b"official AppImage"
         offset = 8

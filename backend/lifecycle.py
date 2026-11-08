@@ -35,6 +35,7 @@ AUTO_SERVICE = "clash-manager-session.service"
 CLEANUP_SERVICE = "clash-manager-uninstall"
 REPOSITORY = "https://github.com/chen08209/FlClash"
 RELEASE_API = "https://api.github.com/repos/chen08209/FlClash/releases/latest"
+STEAMOS_CA_BUNDLE = Path("/etc/ssl/certs/ca-certificates.crt")
 TAG = re.compile(r"v\d+\.\d+\.\d+")
 SAFE_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C", "HOME": "/root"}
 TUN_TRIAL_SECONDS = 90
@@ -84,8 +85,13 @@ def open_release(url, offset, redirects, timeout):
     headers = {"User-Agent": "Clash-Manager", "Accept-Encoding": "identity"}
     if offset:
         headers["Range"] = f"bytes={offset}-"
+    # Decky's bundled OpenSSL can look under /usr/lib/ssl, which SteamOS
+    # does not populate. Keep normal certificate and hostname verification.
+    context = ssl.create_default_context(
+        cafile=str(STEAMOS_CA_BUNDLE) if STEAMOS_CA_BUNDLE.is_file() else None,
+    )
     return urllib.request.build_opener(
-        urllib.request.ProxyHandler({}), redirects,
+        urllib.request.ProxyHandler({}), redirects, urllib.request.HTTPSHandler(context=context),
     ).open(urllib.request.Request(url, headers=headers), timeout=timeout)
 
 
@@ -418,6 +424,8 @@ class Lifecycle:
         except urllib.error.URLError as error:
             if isinstance(error.reason, TimeoutError):
                 raise DownloadInterrupted(timed_out) from None
+            if isinstance(error.reason, ssl.SSLCertVerificationError):
+                raise LifecycleError("The download source's TLS certificate could not be verified.") from None
             if isinstance(error.reason, ssl.SSLError):
                 raise LifecycleError("The download source failed the TLS handshake.") from None
             if error.reason == "Unexpected release redirect":
@@ -425,6 +433,8 @@ class Lifecycle:
             raise DownloadInterrupted("Could not connect to the download source.") from None
         except TimeoutError:
             raise DownloadInterrupted(timed_out) from None
+        except ssl.SSLCertVerificationError:
+            raise LifecycleError("The download source's TLS certificate could not be verified.") from None
         except ssl.SSLError:
             raise LifecycleError("The download source failed the TLS handshake.") from None
         except (ConnectionError, http.client.IncompleteRead):

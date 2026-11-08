@@ -204,6 +204,7 @@
   "Could not download and verify FlClash from any source. Check connectivity and retry.": "所有下载源均未能下载并通过 FlClash 校验。请检查网络后重试。",
   "Could not connect to the download source.": "无法连接到下载源。",
   "The download source failed the TLS handshake.": "与下载源的 TLS 握手失败。",
+  "The download source's TLS certificate could not be verified.": "无法验证下载源的 TLS 证书。",
   "The download source failed unexpectedly.": "下载源发生意外错误。",
   "The download source redirected to an unapproved host.": "下载源重定向到了未获准的主机。",
   "The download source returned HTTP {status}.": "下载源返回 HTTP {status}。",
