@@ -10,15 +10,18 @@ import json
 import os
 import platform
 import pwd
+import queue
 import re
 import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .recover_flclash import (APP, AUTOSTART, HELPER, RUNTIME, TRIAL, clean_tun,
                               recover, trial_lock, tun_slot_available)
@@ -55,25 +58,37 @@ def mutation(method):
 
 
 class OfficialRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, fp, code, msg, headers, newurl):
-        from urllib.parse import urlsplit
+    hosts = {"github.com", "api.github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}
 
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
         target = urlsplit(newurl)
-        if target.scheme != "https" or target.hostname not in {
-            "github.com", "api.github.com", "release-assets.githubusercontent.com",
-            "objects.githubusercontent.com",
-        }:
-            raise urllib.error.URLError("Unexpected official release redirect")
+        if target.scheme != "https" or target.hostname not in self.hosts:
+            raise urllib.error.URLError("Unexpected release redirect")
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
-def open_official(url, offset=0):
+class AssetRedirects(OfficialRedirects):
+    hosts = OfficialRedirects.hosts | {"gh-proxy.com", "dl.clashwall.com"}
+
+
+def open_release(url, offset, redirects, timeout):
+    target = urlsplit(url)
+    if target.scheme != "https" or target.hostname not in redirects.hosts:
+        raise urllib.error.URLError("Unexpected release host")
     headers = {"User-Agent": "Clash-Manager", "Accept-Encoding": "identity"}
     if offset:
         headers["Range"] = f"bytes={offset}-"
     return urllib.request.build_opener(
-        urllib.request.ProxyHandler({}), OfficialRedirects(),
-    ).open(urllib.request.Request(url, headers=headers), timeout=20)
+        urllib.request.ProxyHandler({}), redirects,
+    ).open(urllib.request.Request(url, headers=headers), timeout=timeout)
+
+
+def open_official(url):
+    return open_release(url, 0, OfficialRedirects(), 20)
+
+
+def open_asset(url, offset):
+    return open_release(url, offset, AssetRedirects(), 8)
 
 
 def safe_directory(path, mode, uid=0, gid=0):
@@ -261,7 +276,8 @@ class Lifecycle:
             self._validate_bundle(destination)
             return
         partial = self.private / f"{tag}-{digest}.partial"
-        self._download(partial, f"{REPOSITORY}/releases/download/{tag}/{asset}", digest, size)
+        urls = [f"{REPOSITORY}/releases/download/{tag}/{asset}", *record.get("mirrors", [])]
+        self._download_first(partial, urls, digest, size)
         with tempfile.TemporaryDirectory(dir=self.private) as working:
             directory = Path(working)
             image = directory / asset
@@ -276,8 +292,57 @@ class Lifecycle:
             self._validate_bundle(extracted)
             extracted.rename(destination)
 
+    def _download_first(self, partial, urls, digest, size):
+        if len(urls) == 1:
+            self._download(partial, urls[0], digest, size)
+            return
+
+        # Keep only the official partial on total failure. Separate mirror
+        # files prevent one source from overwriting another source's bytes.
+        directory = partial.parent / "asset-race"
+        if directory.exists():
+            self._discard(directory)
+        directory.mkdir(mode=0o700)
+        results = queue.Queue()
+        cancelled = threading.Event()
+        workers = []
+        winner = None
+
+        def attempt(path, url):
+            verified = None
+            try:
+                self._download(path, url, digest, size, cancelled)
+                verified = path
+            except Exception:
+                # Failed sources are ignored while any other attempt remains.
+                pass
+            finally:
+                results.put(verified)
+
+        try:
+            for index, url in enumerate(urls):
+                path = partial if index == 0 else directory / str(index)
+                worker = threading.Thread(target=attempt, args=(path, url), daemon=True)
+                worker.start()
+                workers.append(worker)
+            for _ in workers:
+                winner = results.get()
+                if winner is not None:
+                    break
+        finally:
+            cancelled.set()
+            for worker in workers:
+                worker.join()
+            try:
+                if winner is not None and winner != partial:
+                    winner.replace(partial)
+            finally:
+                self._discard(directory)
+        if winner is None:
+            raise LifecycleError("Could not download and verify FlClash from any source. Check connectivity and retry.")
+
     @staticmethod
-    def _download(path, url, digest, size):
+    def _download(path, url, digest, size, cancelled=None):
         checksum = hashlib.sha256()
         deadline = time.monotonic() + 180
         try:
@@ -289,15 +354,19 @@ class Lifecycle:
                 with path.open("rb") as previous:
                     while chunk := previous.read(1024 * 1024):
                         checksum.update(chunk)
+            if cancelled is not None and cancelled.is_set():
+                raise LifecycleError("Download cancelled.")
             if count < size:
-                with open_official(url, count) as response:
+                with open_asset(url, count) as response:
                     if response.status == 200:
                         checksum, count = hashlib.sha256(), 0
                     elif (response.status != 206 or not count
                           or response.headers.get("Content-Range") != f"bytes {count}-{size - 1}/{size}"):
-                        raise LifecycleError("GitHub returned an invalid AppImage byte range. Retry the download.")
+                        raise LifecycleError("The download source returned an invalid AppImage byte range.")
                     with path.open("ab" if count else "wb") as output:
                         while chunk := response.read1(128 * 1024):
+                            if cancelled is not None and cancelled.is_set():
+                                raise LifecycleError("Download cancelled.")
                             count += len(chunk)
                             if count > size:
                                 path.unlink()
@@ -770,3 +839,6 @@ WantedBy=timers.target
             self._discard(release)
         for partial in self.private.glob("*.partial"):
             partial.unlink()
+        race = self.private / "asset-race"
+        if race.exists():
+            self._discard(race)

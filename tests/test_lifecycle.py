@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -21,13 +22,56 @@ class LifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "asset.partial"
             image.write_bytes(original[:offset])
-            with patch("backend.lifecycle.open_official", return_value=response) as request:
+            with patch("backend.lifecycle.open_asset", return_value=response) as request:
                 Lifecycle._download(image, url, hashlib.sha256(original).hexdigest(), len(original))
             request.assert_called_once_with(url, offset)
             self.assertEqual(image.read_bytes(), original)
             with self.assertRaisesRegex(LifecycleError, "SHA-256"):
                 Lifecycle._download(image, url, "0" * 64, len(original))
             self.assertFalse(image.exists())
+
+    def test_verified_mirror_cancels_and_cleans_other_downloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            partial = Path(directory) / "asset.partial"
+            lifecycle = Lifecycle(root=Path(directory))
+            official_started = threading.Event()
+            cancelled = threading.Event()
+
+            def download(path, url, digest, size, stop):
+                if url == "official":
+                    path.write_bytes(b"partial")
+                    official_started.set()
+                    if stop.wait(2):
+                        cancelled.set()
+                    raise LifecycleError("Official download stopped.")
+                if url == "corrupt":
+                    path.write_bytes(b"corrupt")
+                    raise LifecycleError("SHA-256 mismatch.")
+                if official_started.wait(2):
+                    path.write_bytes(b"verified")
+                    return
+                raise LifecycleError("Official download did not start.")
+
+            with patch.object(lifecycle, "_download", side_effect=download):
+                lifecycle._download_first(partial, ["official", "corrupt", "mirror"], "digest", 8)
+            self.assertTrue(cancelled.is_set())
+            self.assertEqual(partial.read_bytes(), b"verified")
+            self.assertEqual(list(partial.parent.iterdir()), [partial])
+
+    def test_all_sources_fail_and_only_official_partial_survives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            partial = Path(directory) / "asset.partial"
+            lifecycle = Lifecycle(root=Path(directory))
+
+            def download(path, url, digest, size, stop):
+                path.write_bytes(url.encode())
+                raise LifecycleError("Download interrupted.")
+
+            with patch.object(lifecycle, "_download", side_effect=download):
+                with self.assertRaisesRegex(LifecycleError, "any source"):
+                    lifecycle._download_first(partial, ["official", "mirror"], "digest", 8)
+            self.assertEqual(partial.read_bytes(), b"official")
+            self.assertEqual(list(partial.parent.iterdir()), [partial])
 
     def test_rollback_restores_exact_program_data_and_running_intent(self):
         with tempfile.TemporaryDirectory() as directory:

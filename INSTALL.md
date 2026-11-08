@@ -2,7 +2,7 @@
 
 Enable Developer Mode in Decky Loader, then use its install-from-ZIP option with the Clash Manager release archive. Use a current Decky Loader on SteamOS. Clash Manager needs the Decky root plugin permission to install its own systemd services.
 
-The plugin downloads the official Linux x86-64 FlClash v0.9.3 AppImage, checks its pinned SHA-256, and extracts it under `/home/clash-manager`. The Helper runs as a system service. The client and its private data use the deck account. On first launch the plugin accepts the FlClash v0.9.3 disclaimer on your behalf via the upstream unattended-start option. Review the upstream notice before installing. [FlClash unattended desktop startup](https://github.com/chen08209/FlClash/blob/v0.9.3/README.md#unattended-desktop)
+The plugin races GitHub and the configured mirrors for the official Linux x86-64 FlClash v0.9.3 AppImage, verifies the pinned size and SHA-256, and extracts the first verified copy under `/home/clash-manager`. The Helper runs as a system service. The client and its private data use the deck account. On first launch the plugin accepts the FlClash v0.9.3 disclaimer on your behalf via the upstream unattended-start option. Review the upstream notice before installing. [FlClash unattended desktop startup](https://github.com/chen08209/FlClash/blob/v0.9.3/README.md#unattended-desktop)
 
 Import a Clash/Mihomo YAML or an HTTP(S) subscription, select it, and choose Start. Autostart is opt-in. The panel distinguishes the selected profile from the profile confirmed by the running core. The original client has a fixed authenticated controller on loopback port 9090. If another client already uses that port or controls host-wide routing, resolve the conflict before starting FlClash or enabling TUN.
 

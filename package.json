@@ -1,6 +1,6 @@
 {
   "name": "clash-manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Install and manage FlClash from Steam Deck's Quick Access Menu",
   "type": "module",
   "private": true,
