@@ -187,11 +187,19 @@ class ManagerTests(unittest.TestCase):
             self.addCleanup(server.shutdown)
             url = f"http://127.0.0.1:{server.server_port}/subscription"
             self.manager.save_user_agent("", "Custom", "ClashManager-Observer/1")
-            self.manager.select_user_agent(next(iter(self.manager.state["agents"])))
+            custom = next(iter(self.manager.state["agents"]))
+            self.assertEqual(self.manager.invoke("select_user_agent", custom), {"ok": True})
             self.manager.import_subscription(url)
             profile = self.manager.state["selected"]
             self.assertEqual(self.manager.state["profiles"][profile]["name"], "测试")
+            self.manager.start()
+            self.assertEqual(self.manager.invoke("select_user_agent", "mihomo"), {"ok": True})
+            self.assertEqual(self.manager.load()["selected_ua"], "mihomo")
+            self.assertEqual(self.manager.get_status()["selected_ua"], "mihomo")
+            self.assertEqual(self.core.prepared[1]["user_agent"], "mihomo")
+            self.assertTrue(self.lifecycle.active)
             self.manager.refresh_profile(profile)
+            self.assertEqual(self.manager.invoke("select_user_agent", custom), {"ok": True})
             self.manager.edit_subscription(profile, "", "Feed", 1)
             state = self.manager.state
             state["profiles"][profile]["attempted_at"] = time.time() - 3601
@@ -199,7 +207,7 @@ class ManagerTests(unittest.TestCase):
             good_blob = self.manager.blob()
             self.assertEqual(good_blob.read_bytes(), b"third")
             self.assertEqual(self.manager.state["profiles"][profile]["name"], "Feed")
-            self.assertEqual(seen, ["ClashManager-Observer/1"] * 3)
+            self.assertEqual(seen, ["ClashManager-Observer/1", "mihomo", "ClashManager-Observer/1"])
             with self.assertRaisesRegex(OperationError, "Bad YAML"):
                 self.manager.refresh_profile(profile)
             self.assertEqual(self.manager.blob(), good_blob)

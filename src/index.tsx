@@ -334,33 +334,36 @@ function UserAgents({ status, disabled, run }: { status: Status; disabled: boole
   const { t } = useLocalization();
   const [managedId, setManagedId] = useState<string>();
   const selected = status.user_agents.find(({ id }) => id === status.selected_ua);
-  const agent = status.user_agents.find(({ id }) => id === managedId) ?? selected ?? status.user_agents[0];
+  const custom = status.user_agents.filter(({ preset }) => !preset);
+  const agent = custom.find(({ id }) => id === managedId)
+    ?? custom.find(({ id }) => id === status.selected_ua) ?? custom[0];
   return (
     <PanelSection title={t("Subscription User-Agent")}>
-      <Info label={t("Active User-Agent")} value={selected?.name ?? t("Default")} />
+      <PanelSectionRow>
+        <DropdownItem label={t("Active User-Agent")} selectedOption={status.selected_ua}
+          description={t("Used for the next subscription download or refresh.")}
+          rgOptions={status.user_agents.map(({ id, name }) => ({ data: id, label: name }))}
+          disabled={disabled} onChange={(option) => {
+            if (option.data !== status.selected_ua) void run(() => rpc.selectUserAgent(option.data));
+          }} />
+      </PanelSectionRow>
+      {selected && <Info label={t(selected.preset ? "Preset" : "User-Agent")} value={selected.value} />}
       <Action label={t("Add custom User-Agent")} disabled={disabled}
         onClick={() => showDialog((close) => <UserAgentDialog close={close} run={run} />)} />
       {agent && (
         <>
           <PanelSectionRow>
-            <DropdownItem label={t("Manage User-Agent")} selectedOption={agent.id}
-              rgOptions={status.user_agents.map(({ id, name }) => ({ data: id, label: name }))}
+            <DropdownItem label={t("Manage custom User-Agent")} selectedOption={agent.id}
+              rgOptions={custom.map(({ id, name }) => ({ data: id, label: name }))}
               disabled={disabled} onChange={(option) => setManagedId(option.data)} />
           </PanelSectionRow>
-          <Info label={t(agent.preset ? "Preset" : "User-Agent")} value={agent.value} />
-          <Action label={t("Use for subscriptions")} disabled={disabled || agent.id === status.selected_ua}
-            onClick={() => void run(() => rpc.selectUserAgent(agent.id))} />
-          {!agent.preset && (
-            <>
-              <Action label={t("Edit User-Agent")} disabled={disabled}
-                onClick={() => showDialog((close) => <UserAgentDialog close={close} run={run} agent={agent} />)} />
-              <Action label={t("Delete User-Agent")} disabled={disabled} onClick={() => showDialog((close) => (
-                <ConfirmAction close={close} run={run} title={t("Delete User-Agent?")}
-                  description={t("Remove {name} from Clash Manager.", { name: agent.name })} actionLabel={t("Delete")}
-                  action={() => rpc.deleteUserAgent(agent.id)} />
-              ))} />
-            </>
-          )}
+          <Action label={t("Edit User-Agent")} disabled={disabled}
+            onClick={() => showDialog((close) => <UserAgentDialog close={close} run={run} agent={agent} />)} />
+          <Action label={t("Delete User-Agent")} disabled={disabled} onClick={() => showDialog((close) => (
+            <ConfirmAction close={close} run={run} title={t("Delete User-Agent?")}
+              description={t("Remove {name} from Clash Manager.", { name: agent.name })} actionLabel={t("Delete")}
+              action={() => rpc.deleteUserAgent(agent.id)} />
+          ))} />
         </>
       )}
     </PanelSection>
