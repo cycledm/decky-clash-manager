@@ -29,7 +29,8 @@ TUN_RULE = 30291
 SCHEMA_VERSION = 23
 PROFILE_ID = 7848212300773000
 MAX_RESPONSE = 32 * 1024 * 1024
-GEO_FILES = ("country.mmdb", "geoip.dat", "geosite.dat", "ASN.mmdb")
+# Exact asset names used by FlClash v0.9.3 on case-sensitive filesystems.
+GEO_FILES = ("GEOIP.metadb", "GEOIP.dat", "GEOSITE.dat", "ASN.mmdb")
 FAKE_DEFAULTS = ("198.18.0.0/15", "fc00::/18")
 
 # Match YAML v3's scalar handling for strings such as on/off and preserve

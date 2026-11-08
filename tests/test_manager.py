@@ -11,10 +11,38 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.downloads import DownloadedProfile, fetch_profile, subscription_name
+from backend.flclash import FlClash
 from backend.ipc import OperationError
 from backend.manager import Manager
 from backend.phone import BoundedServer, Pairing, lan_interfaces
 from backend.transport import PanelHandler
+
+
+class FlClashValidationTests(unittest.TestCase):
+    def test_validation_copies_the_release_geodata_with_exact_names(self):
+        assets = ("GEOIP.metadb", "GEOIP.dat", "GEOSITE.dat", "ASN.mmdb")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FlClash(root / "data")
+            client.assets.mkdir(parents=True)
+            client.core.touch()
+            for name in assets:
+                (client.assets / name).write_text(name)
+            profile = root / "profile.yaml"
+            profile.write_text("rules: ['GEOIP,CN,DIRECT', 'MATCH,DIRECT']\n")
+
+            def check_assets(_command, *, cwd, **_options):
+                for name in assets:
+                    self.assertEqual((Path(cwd) / name).read_text(), name)
+                return process.return_value
+
+            with patch("backend.flclash.os.geteuid", return_value=1000), \
+                 patch("backend.flclash.socket.socket") as listener, \
+                 patch("backend.flclash.core_method", return_value=None), \
+                 patch("backend.flclash.subprocess.Popen", side_effect=check_assets) as process:
+                listener.return_value.__enter__.return_value.accept.return_value = (listener, None)
+                client.validate(profile)
+            process.assert_called_once()
 
 
 class Core:
